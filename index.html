@@ -197,7 +197,7 @@
     }
 
     async function mergeAllFiles() {
-      const allFiles = Array.from(fileInput.files);
+      const allFiles = Array.from(fileInput.files)   .sort((a, b) => a.lastModified - b.lastModified);
       const pdfDoc = await PDFLib.PDFDocument.create();
       let totalOriginalSize = 0;
 
@@ -298,3 +298,4 @@
 </script>
 </body>
 </html>
+
