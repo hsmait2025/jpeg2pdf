@@ -1,4 +1,4 @@
-const CACHE_NAME = "compressor-cache-v2"; // bumped version
+const CACHE_NAME = "compressor-cache-v3"; // bumped version
 
 self.addEventListener("install", e => {
   e.waitUntil(
@@ -28,3 +28,4 @@ self.addEventListener("fetch", e => {
     caches.match(e.request).then(response => response || fetch(e.request))
   );
 });
+
