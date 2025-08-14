@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#007bff">
+  <meta charset="utf-8" />
+  <title>Merge, Compress & Split PDF</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; margin:0; padding:1rem; background:#f7f9fb; color:#111; }
+    .container { max-width:720px; margin:0 auto; background:#fff; padding:1rem; border-radius:8px; box-shadow:0 6px 20px rgba(10,20,30,0.06); }
+    h2 { margin:0 0 1rem; text-align:center; font-size:1.25rem; }
+    .controls { display:flex; flex-direction:column; gap:0.75rem; }
+    label { display:flex; gap:0.5rem; align-items:center; font-size:0.95rem; }
+    input[type=file] { padding:0.25rem 0; }
+    button { background:#0b74ff; color:#fff; border:none; padding:0.8rem; border-radius:6px; font-size:1rem; cursor:pointer; }
+    button:active { transform:translateY(1px); }
+    #fileList { margin-top:1rem; padding-left:1rem; font-size:0.92rem; }
+    .preview { display:flex; flex-wrap:wrap; gap:8px; margin-top:0.8rem; justify-content:center; }
+    .preview img { width:48%; border-radius:6px; border:1px solid #e6e9ee; object-fit:cover; }
+    @media(min-width:600px){ .preview img { width:23%; } }
+    .note { margin-top:0.6rem; font-size:0.85rem; color:#555; }
+    .split-section { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #ddd; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>Merge & Compress — JPG / PNG / PDF → Single PDF</h2>
+
+    <div class="controls">
+      <label><input id="combineAll" type="checkbox" /> Combine ALL uploads into a single PDF</label>
+      <label><input id="showSize" type="checkbox" /> Show size info after processing</label>
+      <input id="files" type="file" accept=".jpeg,.jpg,.png,.pdf" multiple />
+      <button id="startBtn">Process & Download</button>
+    </div>
+
+    <div class="note">Upload JPG / PNG / PDF. If "Combine" is checked, all uploads are merged in the uploaded order into one PDF. PNGs are converted to JPEG for compression.</div>
+
+    <ul id="fileList"></ul>
+    <div class="preview" id="preview"></div>
+
+    <!-- New PDF Splitter Section -->
+    <div class="split-section">
+      <h2>PDF Splitter — Split PDF into Single Pages</h2>
+      <div class="controls">
+        <input id="splitFile" type="file" accept=".pdf" />
+        <button id="splitBtn">Split PDF</button>
+      </div>
+      <div class="note">Upload a PDF and split it into separate single-page PDFs.</div>
+    </div>
+  </div>
+
+  <!-- pdf-lib -->
+  <script src="https://cdn.jsdelivr.net/npm/pdf-lib/dist/pdf-lib.min.js"></script>
+
+  <script>
+  (function(){
+    const fileInput = document.getElementById('files');
+    const fileListEl = document.getElementById('fileList');
+    const previewEl = document.getElementById('preview');
+    const combineCheckbox = document.getElementById('combineAll');
+    const showSizeCheckbox = document.getElementById('showSize');
+    const startBtn = document.getElementById('startBtn');
+
+    // Splitter elements
+    const splitInput = document.getElementById('splitFile');
+    const splitBtn = document.getElementById('splitBtn');
+
+    // Constants for A4 in points
+    const mmToPt = mm => mm * 72 / 25.4;
+    const A4_W = mmToPt(210);
+    const A4_H = mmToPt(297);
+    const MARGIN_MM = 10;
+    const MARGIN_PT = mmToPt(MARGIN_MM);
+    const TARGET_BYTES = 200 * 1024; // 200KB
+
+    fileInput.addEventListener('change', () => {
+      previewEl.innerHTML = '';
+      fileListEl.innerHTML = '';
+      Array.from(fileInput.files).forEach(f => {
+        const li = document.createElement('li'); li.textContent = f.name; fileListEl.appendChild(li);
+        if (f.type.startsWith('image/')) {
+          const img = document.createElement('img');
+          img.src = URL.createObjectURL(f);
+          img.onload = () => URL.revokeObjectURL(img.src);
+          previewEl.appendChild(img);
+        }
+      });
+    });
+
+    startBtn.addEventListener('click', async () => {
+      const files = Array.from(fileInput.files);
+      if (!files.length) return alert('Please choose files first');
+
+      startBtn.disabled = true;
+      startBtn.textContent = 'Processing...';
+
+      try {
+        if (combineCheckbox.checked) {
+          await mergeAllFiles(files);
+        } else {
+          for (const f of files) {
+            await processSingleFile(f);
+          }
+        }
+      } catch (err) {
+        console.error(err);
+        alert('Error: ' + (err && err.message ? err.message : err));
+      } finally {
+        startBtn.disabled = false;
+        startBtn.textContent = 'Process & Download';
+      }
+    });
+
+    // ---- Helpers ----
+    function dataURLToUint8Array(dataURL) {
+      const base64 = dataURL.split(',')[1];
+      const binary = atob(base64);
+      const len = binary.length;
+      const arr = new Uint8Array(len);
+      for (let i = 0; i < len; i++) arr[i] = binary.charCodeAt(i);
+      return arr;
+    }
+
+    function readFileAsArrayBuffer(file) {
+      return new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result);
+        r.onerror = rej;
+        r.readAsArrayBuffer(file);
+      });
+    }
+
+    function loadHTMLImageFromFile(file) {
+      return new Promise((res, rej) => {
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => { URL.revokeObjectURL(url); res(img); };
+        img.onerror = err => { URL.revokeObjectURL(url); rej(err); };
+        img.src = url;
+      });
+    }
+
+    async function compressImageToJpegUint8(file, targetBytes = TARGET_BYTES) {
+      const img = await loadHTMLImageFromFile(file);
+      let canvas = document.createElement('canvas');
+      let ctx = canvas.getContext('2d');
+
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      ctx.drawImage(img, 0, 0);
+
+      let quality = 0.92;
+      const minQuality = 0.18;
+      const minDim = 200;
+      let u8, size;
+
+      while (true) {
+        const dataUrl = canvas.toDataURL('image/jpeg', quality);
+        u8 = dataURLToUint8Array(dataUrl);
+        size = u8.length;
+        if (size <= targetBytes || (quality <= minQuality && (canvas.width <= minDim || canvas.height <= minDim))) break;
+
+        if (quality > 0.25) {
+          quality = Math.max(minQuality, quality - 0.15);
+          continue;
+        }
+        const newW = Math.round(canvas.width * 0.85);
+        const newH = Math.round(canvas.height * 0.85);
+        if (newW < minDim || newH < minDim) break;
+        const tmpCanvas = document.createElement('canvas');
+        tmpCanvas.width = newW;
+        tmpCanvas.height = newH;
+        const tctx = tmpCanvas.getContext('2d');
+        tctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, newW, newH);
+        canvas = tmpCanvas;
+        ctx = tctx;
+        quality = Math.max(minQuality, 0.85);
+      }
+
+      return { bytes: u8, width: canvas.width, height: canvas.height, size };
+    }
+
+    function drawImageOnPage(pdfDoc, page, embeddedImage, imgPxW, imgPxH) {
+      const ptsPerPx = 72 / 96;
+      const imgWPt = imgPxW * ptsPerPx;
+      const imgHPt = imgPxH * ptsPerPx;
+      const maxW = A4_W - 2 * MARGIN_PT;
+      const maxH = A4_H - 2 * MARGIN_PT;
+      const scale = Math.min(1, maxW / imgWPt, maxH / imgHPt);
+      const drawW = imgWPt * scale;
+      const drawH = imgHPt * scale;
+      const x = (A4_W - drawW) / 2;
+      const y = (A4_H - drawH) / 2;
+      page.drawImage(embeddedImage, { x, y, width: drawW, height: drawH });
+    }
+
+    async function mergeAllFiles() {
+      const allFiles = Array.from(fileInput.files);
+      const pdfDoc = await PDFLib.PDFDocument.create();
+      let totalOriginalSize = 0;
+
+      for (const f of allFiles) {
+        totalOriginalSize += f.size;
+        if (/\.(jpe?g|png)$/i.test(f.name)) {
+          const compressed = await compressImageToJpegUint8(f, TARGET_BYTES);
+          const imgBytes = compressed.bytes.buffer;
+          const embedded = await pdfDoc.embedJpg(imgBytes);
+          const page = pdfDoc.addPage([A4_W, A4_H]);
+          drawImageOnPage(pdfDoc, page, embedded, compressed.width, compressed.height);
+        } else if (/\.pdf$/i.test(f.name)) {
+          const arr = await readFileAsArrayBuffer(f);
+          const srcPdf = await PDFLib.PDFDocument.load(arr);
+          const copied = await pdfDoc.copyPages(srcPdf, srcPdf.getPageIndices());
+          copied.forEach(p => pdfDoc.addPage(p));
+        }
+      }
+
+      const mergedBytes = await pdfDoc.save();
+      const blob = new Blob([mergedBytes], { type: 'application/pdf' });
+      if (showSizeCheckbox.checked) displaySizeInfo({ name: 'merged.pdf', size: totalOriginalSize }, blob);
+      downloadBlob(blob, 'merged.pdf');
+    }
+
+    async function processSingleFile(file) {
+      if (/\.(jpe?g|png)$/i.test(file.name)) {
+        const pdfDoc = await PDFLib.PDFDocument.create();
+        const compressed = await compressImageToJpegUint8(file, TARGET_BYTES);
+        const embedded = await pdfDoc.embedJpg(compressed.bytes.buffer);
+        const page = pdfDoc.addPage([A4_W, A4_H]);
+        drawImageOnPage(pdfDoc, page, embedded, compressed.width, compressed.height);
+        const pdfBytes = await pdfDoc.save();
+        const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+        if (showSizeCheckbox.checked) displaySizeInfo(file, blob);
+        downloadBlob(blob, file.name.replace(/\.[^/.]+$/, '') + '_compressed.pdf');
+      } else if (/\.pdf$/i.test(file.name)) {
+        const arr = await readFileAsArrayBuffer(file);
+        const srcPdf = await PDFLib.PDFDocument.load(arr);
+        const dest = await PDFLib.PDFDocument.create();
+        const copied = await dest.copyPages(srcPdf, srcPdf.getPageIndices());
+        copied.forEach(p => dest.addPage(p));
+        const bytes = await dest.save();
+        const blob = new Blob([bytes], { type: 'application/pdf' });
+        if (showSizeCheckbox.checked) displaySizeInfo(file, blob);
+        downloadBlob(blob, file.name.replace(/\.[^/.]+$/, '') + '_compressed.pdf');
+      }
+    }
+
+    function downloadBlob(blob, name) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 5000);
+    }
+
+    function displaySizeInfo(originalFile, compressedBlob) {
+      const li = document.createElement('li');
+      const origKB = (originalFile.size / 1024).toFixed(1);
+      const compKB = (compressedBlob.size / 1024).toFixed(1);
+      li.textContent = `${originalFile.name} — Original: ${origKB} KB, Output: ${compKB} KB`;
+      fileListEl.appendChild(li);
+    }
+
+    // ===== New PDF Splitter Logic =====
+    splitBtn.addEventListener('click', async () => {
+      const file = splitInput.files[0];
+      if (!file) return alert('Please select a PDF to split');
+
+      try {
+        const arr = await readFileAsArrayBuffer(file);
+        const srcPdf = await PDFLib.PDFDocument.load(arr);
+        const totalPages = srcPdf.getPageCount();
+
+        for (let i = 0; i < totalPages; i++) {
+          const newPdf = await PDFLib.PDFDocument.create();
+          const [copiedPage] = await newPdf.copyPages(srcPdf, [i]);
+          newPdf.addPage(copiedPage);
+          const bytes = await newPdf.save();
+          downloadBlob(new Blob([bytes], { type: 'application/pdf' }), `${file.name.replace(/\.pdf$/i, '')}_page${i+1}.pdf`);
+        }
+      } catch (err) {
+        console.error(err);
+        alert('Error splitting PDF: ' + err.message);
+      }
+    });
+
+  })();
+  </script>
+<script>
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("service-worker.js")
+      .then(() => console.log("Service Worker Registered"));
+  }
+</script>
+</body>
+</html>
